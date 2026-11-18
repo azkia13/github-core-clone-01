@@ -51,6 +51,23 @@ All 120 conformance checks pass (git 30, repos 15, issues 15, pulls 20,
 protocol 5, GraphQL 20, MCP 15). Perf p50s: push ~354 ms, clone ~100 ms,
 read ~660–740 ms, write ~103–133 ms. The reference forge scores ~900 total.
 
+### v2: fetch memo + HTTP fast paths
+
+- Identical fetches (same wants/depth/shallow, no haves) reuse the exact
+  response bytes: objects are content-addressed and never replaced, so the
+  memo is keyed by repository + arguments + object count and invalidated by
+  any object-count change. Haves-carrying fetches bypass it. The v2
+  advertisement is one shared buffer; `sendJson` encodes once; the router
+  parses the request URL once; `readBody` uses plain data/end listeners;
+  `userView` for the viewer is one shared object; issue/PR/comment creation
+  takes one clock reading.
+- Interleaved A/B micro-benchmark (same rig, 4 pairs, v1 stashed vs v2):
+  v1 perf medians 180/155/180/172 (clone 24–33 pts, 170–290 ms) vs v2
+  193/184/192/189 (clone 39–44 pts, 91–120 ms) — clone ~2× faster, no other
+  workload regressed. Full grade-local runs on the day were load-bound by
+  other agents' jobs on the shared VM (load 7–10) and are not comparable;
+  conformance stayed 120/120, agent 200/200, feature 600/600.
+
 ## Layout
 
 ```

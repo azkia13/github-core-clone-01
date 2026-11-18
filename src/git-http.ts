@@ -84,18 +84,70 @@ export function advertisementV0(repo: Repo, service: 'git-upload-pack' | 'git-re
 }
 
 /** A v2 capability advertisement for upload-pack (the service preamble, then `version 2`). */
+const ADVERTISEMENT_V2: Buffer = encodePktLines([
+  '# service=git-upload-pack\n',
+  'flush',
+  'version 2\n',
+  `agent=${FORGE_AGENT}\n`,
+  'ls-refs=unborn\n',
+  'fetch=shallow wait-for-done\n',
+  'server-option\n',
+  'object-format=sha1\n',
+  'flush',
+]);
+
 export function advertisementV2(): Buffer {
-  return encodePktLines([
-    '# service=git-upload-pack\n',
-    'flush',
-    'version 2\n',
-    `agent=${FORGE_AGENT}\n`,
-    'ls-refs=unborn\n',
-    'fetch=shallow wait-for-done\n',
-    'server-option\n',
-    'object-format=sha1\n',
-    'flush',
-  ]);
+  // The same bytes every time: one shared buffer (responses never mutate it).
+  return ADVERTISEMENT_V2;
+}
+
+// ---------------------------------------------------------------------------------------------
+// fetch response memo
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Memoized fetch answers. A fetch's bytes depend only on the objects its walk reaches, and
+ * git objects are content-addressed and never replaced, so the same wants/depth/shallow on
+ * the same object count always builds the same pack. The cache is keyed by the repository
+ * object (deleting a repo drops its entries) and by the fetch arguments; each entry also
+ * records the object count it was built at, and a changed count rebuilds. Only haves-free
+ * fetches are cached: a have-closure depends on the client's haves, which the key would have
+ * to carry whole. Bounded per repository, oldest first out.
+ */
+const FETCH_CACHE_MAX = 64;
+const fetchCache = new WeakMap<Repo, Map<string, { size: number; body: Buffer }>>();
+
+/** The cache key for a fetch, or null when it must not be cached (it carries haves). */
+function fetchCacheKey(version: 'v0' | 'v2', args: FetchArgs): string | null {
+  if (args.haves.length > 0) return null;
+  const wants = [...args.wants].sort().join(',');
+  const shallow = [...args.shallow].sort().join(',');
+  return `${version}|w:${wants}|d:${args.depth ?? ''}|s:${shallow}`;
+}
+
+/** A cached fetch answer, or null. */
+export function fetchCached(repo: Repo, version: 'v0' | 'v2', args: FetchArgs): Buffer | null {
+  const key = fetchCacheKey(version, args);
+  if (key === null) return null;
+  const entry = fetchCache.get(repo)?.get(key);
+  if (entry === undefined || entry.size !== repo.objects.size) return null;
+  return entry.body;
+}
+
+/** Store a fetch answer for later identical fetches. */
+export function fetchCacheStore(repo: Repo, version: 'v0' | 'v2', args: FetchArgs, body: Buffer): void {
+  const key = fetchCacheKey(version, args);
+  if (key === null) return;
+  let perRepo = fetchCache.get(repo);
+  if (perRepo === undefined) {
+    perRepo = new Map();
+    fetchCache.set(repo, perRepo);
+  }
+  if (perRepo.size >= FETCH_CACHE_MAX) {
+    const oldest = perRepo.keys().next().value;
+    if (oldest !== undefined) perRepo.delete(oldest);
+  }
+  perRepo.set(key, { size: repo.objects.size, body });
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -523,6 +523,8 @@ export class Store {
   ): Issue | { error: string } {
     const labels = opts.labels ?? [];
     for (const name of labels) if (!repo.labels.has(name)) return { error: `label ${name} does not exist` };
+    // One clock reading: created and updated are the same instant at creation.
+    const now = nowIso();
     const issue: Issue = {
       id: this.takeId(),
       number: repo.numberSeq++,
@@ -531,8 +533,8 @@ export class Store {
       state: 'open',
       labels: [...labels],
       user: VIEWER,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
+      createdAt: now,
+      updatedAt: now,
       comments: [],
     };
     repo.issues.push(issue);
@@ -544,7 +546,8 @@ export class Store {
   }
 
   addComment(repo: Repo, issue: Issue, body: string): IssueComment {
-    const comment: IssueComment = { id: this.takeId(), body, user: VIEWER, createdAt: nowIso(), updatedAt: nowIso() };
+    const now = nowIso();
+    const comment: IssueComment = { id: this.takeId(), body, user: VIEWER, createdAt: now, updatedAt: now };
     issue.comments.push(comment);
     return comment;
   }
@@ -560,6 +563,7 @@ export class Store {
     if (headSha === undefined) return { error: `the head branch ${opts.head} does not exist` };
     const baseSha = this.branchTip(repo, opts.base);
     if (baseSha === undefined) return { error: `the base branch ${opts.base} does not exist` };
+    const now = nowIso();
     const pull: PullRequest = {
       id: this.takeId(),
       number: repo.numberSeq++,
@@ -572,8 +576,8 @@ export class Store {
       head: { ref: opts.head, sha: headSha },
       base: { ref: opts.base, sha: baseSha },
       user: VIEWER,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
+      createdAt: now,
+      updatedAt: now,
     };
     repo.pulls.push(pull);
     return pull;
@@ -632,7 +636,7 @@ export class Store {
     pull.merged = true;
     pull.mergedAt = nowIso();
     pull.mergeCommitSha = sha;
-    pull.updatedAt = nowIso();
+    pull.updatedAt = pull.mergedAt;
     pull.head.sha = headTip;
     pull.base.sha = sha;
     return { sha };

@@ -20,14 +20,16 @@ export function sendJson(
   body: unknown,
   headers: Readonly<Record<string, string>> = {},
 ): void {
-  const text = `${JSON.stringify(body)}\n`;
+  // One buffer, one UTF-8 pass: the length comes from the buffer, and res.end needs no
+  // second encoding of the same string.
+  const buf = Buffer.from(`${JSON.stringify(body)}\n`, 'utf8');
   res.writeHead(status, {
     'content-type': JSON_TYPE,
-    'content-length': Buffer.byteLength(text),
+    'content-length': buf.length,
     'x-github-request-id': nextRequestId(),
     ...headers,
   });
-  res.end(text);
+  res.end(buf);
 }
 
 /** Answer with a GitHub-shaped error body: `{"message": "..."}`. */
@@ -74,22 +76,43 @@ export function headerOf(req: IncomingMessage, name: string): string | null {
 
 /** Read a request body, up to `maxBytes` (default 64 MiB). Throws on overflow. */
 export async function readBody(req: IncomingMessage, maxBytes = 64 * 1024 * 1024): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buffer = chunk as Buffer;
-    size += buffer.length;
-    if (size > maxBytes) throw new Error('request body is too large');
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks, size);
+  // Plain data/end listeners instead of the async iterator: a small body is one chunk, and
+  // the iterator protocol costs a promise turn per chunk on top of the stream machinery.
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        if (!settled) {
+          settled = true;
+          reject(new Error('request body is too large'));
+        }
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (!settled) {
+        settled = true;
+        resolve(Buffer.concat(chunks, size));
+      }
+    });
+    req.on('error', (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+  });
 }
 
 /** Parse a body as JSON. Returns undefined for an empty body; throws on invalid JSON. */
 export function parseJsonBody(body: Buffer): unknown {
-  const text = body.toString('utf8').trim();
-  if (text === '') return undefined;
-  return JSON.parse(text) as unknown;
+  if (body.length === 0) return undefined;
+  // JSON.parse tolerates surrounding whitespace itself; no trim copy needed.
+  return JSON.parse(body.toString('utf8')) as unknown;
 }
 
 /** Standard base64 of UTF-8 text. */

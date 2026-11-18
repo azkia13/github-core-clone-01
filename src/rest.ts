@@ -25,8 +25,6 @@ import {
   isValidRef,
   nowIso,
   parseJsonBody,
-  pathOf,
-  queryOf,
   readBody,
   sendError,
   sendJson,
@@ -72,8 +70,20 @@ export function originOf(req: IncomingMessage): string {
 // ---------------------------------------------------------------------------------------------
 
 function userView(user: { id: number; login: string; name: string; email: string }): Record<string, unknown> {
+  // Every user the store ever names is the viewer, so one shared view object is enough;
+  // a different login still builds its own.
+  if (user.login === VIEWER.login) return VIEWER_VIEW;
   return { login: user.login, id: user.id, name: user.name, email: user.email, type: 'User' };
 }
+
+/** The viewer's user object, shared by every view (views are only ever serialized). */
+const VIEWER_VIEW: Record<string, unknown> = {
+  login: VIEWER.login,
+  id: VIEWER.id,
+  name: VIEWER.name,
+  email: VIEWER.email,
+  type: 'User',
+};
 
 function repoView(repo: Repo, origin: string): Record<string, unknown> {
   return {
@@ -825,13 +835,19 @@ function sortedGitRefs(repo: Repo): Array<Record<string, unknown>> {
  * 404 for an unknown /api/v3 route). The caller owns the body parse: a malformed JSON body is a
  * 400, answered here before routing.
  */
-export async function handleRest(req: IncomingMessage, res: ServerResponse, store: RestStore, token: string): Promise<boolean> {
-  const segments = splitPath(pathOf(req)).slice(2); // after /api/v3
+export async function handleRest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: RestStore,
+  token: string,
+  url: URL,
+): Promise<boolean> {
+  const segments = splitPath(url.pathname).slice(2); // after /api/v3
   const ctx: RestContext = {
     req,
     res,
     segments,
-    query: queryOf(req),
+    query: url.searchParams,
     body: undefined,
     origin: originOf(req),
     token,

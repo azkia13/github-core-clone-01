@@ -9,6 +9,8 @@ import {
   advertisementV0,
   advertisementV2,
   applyPush,
+  fetchCached,
+  fetchCacheStore,
   fetchV0Response,
   fetchV2Response,
   lsRefsResponse,
@@ -23,7 +25,7 @@ import { executeGraphQL, type GraphQLStoreFull } from './graphql.ts';
 import { handleMcp, type McpStore } from './mcp.ts';
 import { handleRest, isAuthorized, type RestStore } from './rest.ts';
 import { store } from './store.ts';
-import { headerOf, isRecord, pathOf, queryOf, readBody, sendError, sendJson, splitPath } from './util.ts';
+import { headerOf, isRecord, readBody, sendError, sendJson, splitPath } from './util.ts';
 
 /** What the server needs: the expected bearer token ('' means authentication is off). */
 export interface ForgeOptions {
@@ -58,7 +60,14 @@ function gitRepo(owner: string, name: string): ReturnType<typeof store.getRepo> 
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse, token: string): Promise<void> {
   const method = (req.method ?? 'GET').toUpperCase();
-  const path = pathOf(req);
+  // The URL is parsed once here; the handlers below take it instead of re-parsing it.
+  let url: URL;
+  try {
+    url = new URL(req.url ?? '/', 'http://entry');
+  } catch {
+    url = new URL('/', 'http://entry');
+  }
+  const path = url.pathname;
   const segments = splitPath(path);
 
   // The boot probe: public, no token.
@@ -115,7 +124,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, token: s
 
   // REST v3.
   if (segments[0] === 'api' && segments[1] === 'v3') {
-    await handleRest(req, res, restStore, token);
+    await handleRest(req, res, restStore, token, url);
     return;
   }
 
@@ -126,7 +135,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, token: s
     const repoName = segments[1]!.replace(/\.git$/, '');
     const tail = segments.slice(2);
     if (tail.length === 2 && tail[0] === 'info' && tail[1] === 'refs' && method === 'GET') {
-      await handleInfoRefs(req, res, token, owner, repoName);
+      await handleInfoRefs(req, res, token, owner, repoName, url);
       return;
     }
     if (tail.length === 1 && (tail[0] === 'git-upload-pack' || tail[0] === 'git-receive-pack') && method === 'POST') {
@@ -159,6 +168,7 @@ async function handleInfoRefs(
   token: string,
   owner: string,
   repoName: string,
+  url: URL,
 ): Promise<void> {
   if (!isAuthorized(req, token)) {
     sendError(res, 401, 'Requires authentication');
@@ -169,7 +179,7 @@ async function handleInfoRefs(
     sendError(res, 404, `Repository ${owner}/${repoName} not found`);
     return;
   }
-  const service = queryOf(req).get('service') ?? '';
+  const service = url.searchParams.get('service') ?? '';
   if (service !== 'git-upload-pack' && service !== 'git-receive-pack') {
     sendError(res, 400, `unknown service ${JSON.stringify(service)}`);
     return;
@@ -241,8 +251,15 @@ async function handleGitService(
       sendError(res, 400, (err as Error).message);
       return;
     }
+    const cached = fetchCached(repo, 'v2', args);
+    if (cached !== null) {
+      sendBuffer(res, 200, GIT_RESULT_TYPE[service]!, cached);
+      return;
+    }
     const plan = planFetch(repo, args);
-    sendBuffer(res, 200, GIT_RESULT_TYPE[service]!, fetchV2Response(repo, args, plan));
+    const answer = fetchV2Response(repo, args, plan);
+    fetchCacheStore(repo, 'v2', args, answer);
+    sendBuffer(res, 200, GIT_RESULT_TYPE[service]!, answer);
     return;
   }
   let args;
@@ -252,8 +269,15 @@ async function handleGitService(
     sendError(res, 400, (err as Error).message);
     return;
   }
+  const cached = fetchCached(repo, 'v0', args);
+  if (cached !== null) {
+    sendBuffer(res, 200, GIT_RESULT_TYPE[service]!, cached);
+    return;
+  }
   const plan = planFetch(repo, args);
-  sendBuffer(res, 200, GIT_RESULT_TYPE[service]!, fetchV0Response(repo, args, plan));
+  const answer = fetchV0Response(repo, args, plan);
+  fetchCacheStore(repo, 'v0', args, answer);
+  sendBuffer(res, 200, GIT_RESULT_TYPE[service]!, answer);
 }
 
 /** Whether a v2 upload-pack body is an ls-refs command (its first line is `command=ls-refs`). */
